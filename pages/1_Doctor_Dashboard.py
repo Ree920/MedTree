@@ -30,6 +30,7 @@ if not st.session_state.get('doctor_logged_in'):
 st.title(f"🩺 Welcome, {st.session_state.get('doctor_name', 'Doctor')}!")
 st.sidebar.button("Logout", on_click=lambda: st.switch_page("app.py"))
 
+# --- Firebase Connection ---
 db = get_firestore_client()
 bucket = get_storage_bucket()
 
