@@ -1,19 +1,20 @@
+# pages/1_Doctor_Dashboard.py
 import streamlit as st
 from firebase_config import get_firestore_client, get_storage_bucket
 import pandas as pd
 from datetime import datetime
 import uuid
 import time
+import requests # Import requests to make API calls
+import json
+from datetime import date, datetime
 
 # --- Helper function for colored dots ---
 def get_dot(category):
     """Returns a colored emoji dot based on the category string."""
-    if category == 'Red':
-        return "🔴"
-    elif category == 'Yellow':
-        return "🟡"
-    else: # Green or None
-        return "🟢"
+    if category == 'Red': return "🔴"
+    elif category == 'Yellow': return "🟡"
+    else: return "🟢"
 
 # --- Page Configuration and Authentication ---
 st.set_page_config(
@@ -76,17 +77,15 @@ with tab1:
 
                 view_red_data = st.toggle("🔴 Show Critical (Red) Records", help="Turn on to view records marked as critical by the patient.")
 
-                # --- Fetch all data ---
+                # Fetch all data once
                 all_prescriptions = [doc.to_dict() for doc in db.collection("prescriptions").where("patient_id", "==", patient_id).stream()]
                 all_allergies = [doc.to_dict() for doc in db.collection("allergies_and_conditions").where("patient_id", "==", patient_id).stream()]
                 all_scans = [doc.to_dict() for doc in db.collection("scans").where("patient_id", "==", patient_id).stream()]
 
-                # --- Filter data based on the toggle's state ---
+                # Filter data based on the toggle's state
                 if view_red_data:
-                    st.info("Showing all records, including critical 'Red' items.")
                     prescriptions, allergies, scans = all_prescriptions, all_allergies, all_scans
                 else:
-                    # Default view: Show only Green and Yellow. Treat uncategorized as Green.
                     prescriptions = [p for p in all_prescriptions if p.get('category', 'Green') in ['Green', 'Yellow']]
                     allergies = [a for a in all_allergies if a.get('category', 'Green') in ['Green', 'Yellow']]
                     scans = [s for s in all_scans if s.get('category', 'Green') in ['Green', 'Yellow']]
@@ -97,32 +96,69 @@ with tab1:
                 with col1:
                     with st.expander("🤧 Allergies & Conditions", expanded=True):
                         if allergies:
-                            for allergy in allergies:
-                                st.info(f"{get_dot(allergy.get('category'))} {allergy['description']}")
-                        else:
-                            st.write("No conditions to display in this view.")
+                            for allergy in allergies: st.info(f"{get_dot(allergy.get('category'))} {allergy['description']}")
+                        else: st.write("No conditions to display in this view.")
                 with col2:
                     with st.expander("📷 Medical Scans", expanded=True):
                         if scans:
-                            for scan in scans:
-                                st.markdown(f"{get_dot(scan.get('category'))} **{scan['body_part']}**: [View Scan]({scan['file_url']})")
-                        else:
-                            st.write("No scans to display in this view.")
+                            for scan in scans: st.markdown(f"{get_dot(scan.get('category'))} **{scan['body_part']}**: [View Scan]({scan['file_url']})")
+                        else: st.write("No scans to display in this view.")
+
                 with st.expander("💊 Prescriptions", expanded=True):
                     if prescriptions:
                         df_data = [{"Category": get_dot(p.get('category')), "Medication": p['medication_name'], "Condition": p['condition'], "Duration": p['duration']} for p in prescriptions]
                         st.dataframe(pd.DataFrame(df_data), use_container_width=True)
-                    else:
-                        st.write("No prescriptions to display in this view.")
+                    else: st.write("No prescriptions to display in this view.")
 
                 st.divider()
-                st.subheader("Add New Records")
+
+                # --- NEW: AI Clinical Assistant Section ---
+                st.subheader("🤖 AI Clinical Assistant")
+
+                # Prepare data for the AI model (only Green and Yellow status)
+                gy_allergies = [a['description'] for a in all_allergies if a.get('category', 'Green') in ['Green', 'Yellow']]
+                gy_prescriptions = [p['medication_name'] for p in all_prescriptions if p.get('category', 'Green') in ['Green', 'Yellow']]
+
+                patient_context_for_ai = {
+                    "allergies": gy_allergies,
+                    "current_medications": gy_prescriptions,
+                    "patient_details": { "name": patient_data.get('Name'), "dob": patient_data.get('DOB') }
+                }
+
+                with st.expander("View Data to be Sent to AI"):
+                    st.json(patient_context_for_ai)
+
+                procedure = st.text_input("Enter a medical procedure or context for analysis (e.g., 'Dental Extraction')", key="ai_procedure")
+
+                if st.button("Analyze with AI", key="ai_analyze_button"):
+                    if not procedure:
+                        st.warning("Please enter a procedure to analyze.")
+                    else:
+                        api_url = "http://127.0.0.1:5000/api/medical/analyze"
+                        payload = {"patient_data": patient_context_for_ai, "procedure": procedure}
+                        with st.spinner("AI is analyzing the data..."):
+                            try:
+                                response = requests.post(api_url, json=payload, timeout=60)
+                                if response.status_code == 200:
+                                    result = response.json()
+                                    st.info("**AI Patient Summary:**")
+                                    st.markdown(result.get("patient_statement"))
+                                    st.success("**AI Generated Questions for Doctor:**")
+                                    st.markdown(result.get("doctor_response"))
+                                else:
+                                    st.error(f"Error from AI service: {response.status_code} - {response.text}")
+                            except requests.exceptions.RequestException as e:
+                                st.error(f"Could not connect to the AI analysis service. Is the backend running? Error: {e}")
+                
+                st.divider()
+
                 # --- Forms to add new data ---
+                st.subheader("Add New Records")
                 form_col1, form_col2, form_col3 = st.columns(3)
                 with form_col1:
                     with st.form("add_allergy_form", clear_on_submit=True):
-                        new_allergy = st.text_input("Add New Allergy/Condition")
-                        if st.form_submit_button("Add Allergy"):
+                        new_allergy = st.text_input("Add Allergy/Condition")
+                        if st.form_submit_button("Add"):
                             if new_allergy:
                                 db.collection("allergies_and_conditions").add({"patient_id": patient_id, "description": new_allergy, "category": "Green", "timestamp": datetime.now()})
                                 st.success("Allergy added!"); st.rerun()
@@ -130,16 +166,15 @@ with tab1:
                     with st.form("add_prescription_form", clear_on_submit=True):
                         med_name = st.text_input("Medication Name")
                         condition = st.text_input("Condition")
-                        duration = st.text_input("Duration")
-                        if st.form_submit_button("Add Prescription"):
-                            if all([med_name, condition, duration]):
-                                db.collection("prescriptions").add({"patient_id": patient_id, "medication_name": med_name, "condition": condition, "duration": duration, "timing": [], "category": "Green", "timestamp": datetime.now()})
+                        if st.form_submit_button("Add"):
+                            if med_name and condition:
+                                db.collection("prescriptions").add({"patient_id": patient_id, "medication_name": med_name, "condition": condition, "duration": "N/A", "timing": [], "category": "Green", "timestamp": datetime.now()})
                                 st.success("Prescription added!"); st.rerun()
                 with form_col3:
                      with st.form("upload_scan_form", clear_on_submit=True):
-                        scan_file = st.file_uploader("Upload New Scan", type=['png', 'jpg', 'pdf'])
+                        scan_file = st.file_uploader("Upload Scan", type=['png', 'jpg', 'pdf'])
                         body_part = st.text_input("Body Part Scanned")
-                        if st.form_submit_button("Upload Scan"):
+                        if st.form_submit_button("Upload"):
                             if scan_file and body_part:
                                 blob = bucket.blob(f"scans/{patient_id}/{scan_file.name}"); blob.upload_from_file(scan_file, content_type=scan_file.type); blob.make_public()
                                 db.collection("scans").add({"patient_id": patient_id, "body_part": body_part, "file_url": blob.public_url, "category": "Green", "timestamp": datetime.now()})
@@ -150,19 +185,30 @@ with tab2:
     st.header("Create a New Patient Record")
     with st.form("new_patient_form", clear_on_submit=True):
         p_name = st.text_input("Full Name")
-        p_dob = st.date_input("Date of Birth", max_value=datetime.today())
+        p_dob = st.date_input("Date of Birth", max_value=datetime.today(), min_value=date(1900, 1, 1))
         p_phone = st.text_input("Phone Number")
+        p_gender = st.selectbox("Gender", ["Male", "Female", "Other"])
+        p_blood_group = st.selectbox("Blood Group", ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"])
+        p_ethnicity = st.text_input("Ethnicity")
         p_password = st.text_input("Set Patient Password", type="password")
+        
         if st.form_submit_button("Create Patient"):
             if all([p_name, p_dob, p_phone, p_password]):
                 patient_id = f"PAT-{str(uuid.uuid4())[:8].upper()}"
                 patient_data = {
-                    "Name": p_name, "DOB": p_dob.strftime("%Y-%m-%d"), "Phno": p_phone,
-                    "password": p_password, "confidential": False
+                    "Name": p_name,
+                    "DOB": p_dob.strftime("%Y-%m-%d"),
+                    "Phno": p_phone,
+                    "Gender": p_gender,
+                    "BloodGroup": p_blood_group,
+                    "Ethnicity": p_ethnicity,
+                    "password": p_password,
+                    "confidential": False,
+                    "family_groups": []
                 }
                 db.collection("patients").document(patient_id).set(patient_data)
                 st.success(f"✅ Patient created: {p_name}")
                 st.info("Provide these credentials to the patient:")
                 st.code(f"Patient ID: {patient_id}\nPassword: {p_password}")
             else:
-                st.error("Please fill in all details.")
+                st.error("Please fill in all required details.")

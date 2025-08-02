@@ -89,7 +89,7 @@ if "note_content" not in st.session_state:
 
 # --- Main Page UI ---
 st.title("🧠 My Private Mental Health Notes")
-st.caption("This is a safe and private space for your thoughts. These notes are not shared with your doctor.")
+st.caption("This is a safe and private space for your thoughts. ")
 st.markdown("---")
 
 # If a new transcription is available, update the text area content
