@@ -4,6 +4,13 @@ from firebase_config import get_firestore_client
 import pandas as pd
 from datetime import datetime
 
+hide_sidebar_style = """
+    <style>
+        [data-testid="stSidebar"] {display: none;}
+    </style>
+"""
+st.markdown(hide_sidebar_style, unsafe_allow_html=True)
+
 # --- Page Configuration and Authentication ---
 st.set_page_config(page_title="Patient Dashboard", page_icon="👤", layout="wide")
 

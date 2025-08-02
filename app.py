@@ -1,13 +1,21 @@
-# app.py
 import streamlit as st
 from firebase_config import get_firestore_client
 import time
+
+# Hide the default Streamlit sidebar
+hide_sidebar_style = """
+    <style>
+        [data-testid="stSidebar"] {display: none;}
+    </style>
+"""
+st.markdown(hide_sidebar_style, unsafe_allow_html=True)
 
 # --- Page Configuration ---
 st.set_page_config(
     page_title="MedTree",
     page_icon="🏥",
-    layout="centered"
+    layout="centered",
+    initial_sidebar_state="collapsed"
 )
 
 # Initialize session state variables if they don't exist
@@ -40,13 +48,12 @@ with login_tab1:
                 doctor_ref = db.collection("doctors").document(doctor_id).get()
                 if doctor_ref.exists:
                     doctor_data = doctor_ref.to_dict()
-                    # Check if the password matches
                     if doctor_data.get('password') == password:
                         st.session_state.doctor_logged_in = True
                         st.session_state.doctor_id = doctor_id
                         st.session_state.doctor_name = doctor_data.get('name', 'Doctor')
                         st.success("Login Successful!")
-                        time.sleep(1) # Brief pause for user to see message
+                        time.sleep(1)
                         st.switch_page("pages/1_Doctor_Dashboard.py")
                     else:
                         st.error("Invalid Doctor ID or Password. Please try again.")
@@ -67,11 +74,9 @@ with login_tab2:
                 patient_ref = db.collection("patients").document(patient_id).get()
                 if patient_ref.exists:
                     patient_data = patient_ref.to_dict()
-                    # Check if the password matches
                     if patient_data.get('password') == password:
                         st.session_state.patient_logged_in = True
                         st.session_state.patient_id = patient_id
                         st.session_state.patient_name = patient_data.get('Name', 'Patient')
                         st.success("Login Successful!")
                         st.switch_page("pages/2_Patient_Dashboard.py")
-                        
