@@ -2,19 +2,11 @@ import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
 import datetime
-import os
-from dotenv import load_dotenv
 
-load_dotenv()
 
 try:
-    # Get the path to the service account key from the environment variable
-    cred_path = os.getenv("firebaseKey")
-    
-    if not cred_path:
-        raise ValueError("firebaseKey not found in .env file")
-
-    cred = credentials.Certificate(cred_path)
+    # Initialize the app with a service account, granting admin privileges
+    cred = credentials.Certificate("serviceAccountKey.json")
     firebase_admin.initialize_app(cred)
     print("Firebase App initialized successfully.")
     
