@@ -3,15 +3,6 @@ from firebase_admin import credentials
 from firebase_admin import firestore
 import datetime
 
-# --- Firebase Initialization ---
-# Important: To use this script, you need to set up a Firebase project
-# and get your service account key.
-# 1. Go to your Firebase project settings -> Service accounts.
-# 2. Click "Generate new private key" and download the JSON file.
-# 3. Rename the downloaded file to "serviceAccountKey.json" and place it
-#    in the same directory as this script.
-# 4. Make sure to install the required library:
-#    pip install firebase-admin
 
 try:
     # Initialize the app with a service account, granting admin privileges

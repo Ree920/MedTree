@@ -73,4 +73,5 @@ with login_tab2:
                         st.session_state.patient_id = patient_id
                         st.session_state.patient_name = patient_data.get('Name', 'Patient')
                         st.success("Login Successful!")
-                        time.sleep
+                        st.switch_page("pages/2_Patient_Dashboard.py")
+                        
