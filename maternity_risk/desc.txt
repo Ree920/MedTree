@@ -1,2 +1,0 @@
-Maternity Risk Prediction Flask API Module.
-  Takes JSON input of factors responsible, gives an output of risks and explains why
