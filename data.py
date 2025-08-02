@@ -2,27 +2,26 @@ import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
 import datetime
+import os
+from dotenv import load_dotenv
 
-# --- Firebase Initialization ---
-# Important: To use this script, you need to set up a Firebase project
-# and get your service account key.
-# 1. Go to your Firebase project settings -> Service accounts.
-# 2. Click "Generate new private key" and download the JSON file.
-# 3. Rename the downloaded file to "serviceAccountKey.json" and place it
-#    in the same directory as this script.
-# 4. Make sure to install the required library:
-#    pip install firebase-admin
+load_dotenv()
 
 try:
-    # Initialize the app with a service account, granting admin privileges
-    cred = credentials.Certificate("serviceAccountKey.json")
+    # Get the path to the service account key from the environment variable
+    cred_path = os.getenv("firebaseKey")
+    
+    if not cred_path:
+        raise ValueError("firebaseKey not found in .env file")
+
+    cred = credentials.Certificate(cred_path)
     firebase_admin.initialize_app(cred)
     print("Firebase App initialized successfully.")
+    
 except Exception as e:
     print(f"Error initializing Firebase App: {e}")
-    print("Please ensure 'serviceAccountKey.json' is in the correct path and is valid.")
-    # We exit if Firebase can't be initialized, as the rest of the script will fail.
     exit()
+
 
 # Get a client instance for Firestore
 db = firestore.client()
