@@ -2,6 +2,13 @@ import streamlit as st
 from firebase_config import get_firestore_client
 import time
 
+st.set_page_config(
+    page_title="MedTree",
+    page_icon="🏥",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
 # Hide the default Streamlit sidebar
 hide_sidebar_style = """
     <style>
@@ -11,12 +18,7 @@ hide_sidebar_style = """
 st.markdown(hide_sidebar_style, unsafe_allow_html=True)
 
 # --- Page Configuration ---
-st.set_page_config(
-    page_title="MedTree",
-    page_icon="🏥",
-    layout="centered",
-    initial_sidebar_state="collapsed"
-)
+
 
 # Initialize session state variables if they don't exist
 if 'doctor_logged_in' not in st.session_state:
