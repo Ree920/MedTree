@@ -139,7 +139,7 @@ def generate_doctor_questions(patient_summary, procedure):
     prompt = (
         "Based on the following patient summary and the planned medical procedure, generate a list "
         "of 3-5 critical questions a doctor should ask the patient to identify potential risks or complications. "
-        "The questions should be direct and clear.\n\n"
+        "The questions should be direct and clear and give only the questions.\n\n"
         f"Patient Summary:\n{patient_summary}\n\n"
         f"Planned Procedure: {procedure}"
     )
