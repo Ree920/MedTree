@@ -12,6 +12,11 @@ import io
 import pydub
 import azure.cognitiveservices.speech as speechsdk
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
+import sys
+import os
+import queue # Import the queue library
+from dotenv import load_dotenv
+load_dotenv()  
 
 # --- Helper functions ---
 def get_dot(category):
@@ -65,8 +70,6 @@ patient_ref = db.collection("patients").document(patient_id)
 # --- Initialize Session State ---
 if 'viewing_group_id' not in st.session_state:
     st.session_state.viewing_group_id = None
-if "transcribed_text" not in st.session_state:
-    st.session_state.transcribed_text = ""
 if "note_content" not in st.session_state:
     st.session_state.note_content = ""
 
@@ -106,7 +109,7 @@ with tab1:
     else: st.info("No prescriptions found.")
 
     # Allergies Table
-    st.subheader("🤧 Allergies & Conditions")
+    st.subheader("🤧 Health History")
     allergies = [{"id": doc.id, **doc.to_dict()} for doc in db.collection("allergies_and_conditions").where(filter=FieldFilter("patient_id", "==", patient_id)).stream()]
     if allergies:
         h_cols = st.columns([6,1,2]); h_cols[0].markdown("**Description**"); h_cols[1].markdown("**Status**"); h_cols[2].markdown("**Set Category**"); st.markdown("---")
@@ -132,83 +135,154 @@ with tab2:
     # --- Basic Configuration ---
     logging.getLogger("pydub").setLevel(logging.WARNING)
 
-    # --- Azure Setup ---
-    SPEECH_KEY = st.secrets["azure"]["speech_key"]
-    SPEECH_REGION = st.secrets["azure"]["speech_region"]
-    speech_config = speechsdk.SpeechConfig(subscription=SPEECH_KEY, region=SPEECH_REGION)
+    # Use st.cache_resource to create the speech_config object only once.
+    @st.cache_resource
+    def get_speech_config():
+        try:
+            speech_key = os.environ.get('SPEECH_KEY')
+            speech_endpoint = os.environ.get('SPEECH_ENDPOINT')
+            if not all([speech_key, speech_endpoint]):
+                return None
+            config = speechsdk.SpeechConfig(subscription=speech_key, endpoint=speech_endpoint)
+            config.speech_recognition_language = "en-US"
+            print("✅ Successfully configured Azure Speech Service client. (This will only run once)")
+            return config
+        except Exception as e:
+            print(f"❌ Error during Azure Speech Service client initialization: {e}", file=sys.stderr)
+            return None
 
-    # --- WebRTC Audio Processor for Azure ---
-    class AzureAudioProcessor(AudioProcessorBase):
-        def __init__(self):
-            self.audio_frames = []
-        def recv(self, frame):
-            self.audio_frames.append(frame)
-            return frame
-        def on_ended(self):
-            if not self.audio_frames: return
-            sound = pydub.AudioSegment.empty()
-            for frame in self.audio_frames: sound += frame
-            if sound.duration_seconds < 0.5: self.audio_frames.clear(); return
-            sound = sound.set_frame_rate(16000).set_sample_width(2).set_channels(1)
-            wav_buffer = io.BytesIO(); sound.export(wav_buffer, format="wav")
-            stream = speechsdk.audio.PushAudioInputStream(); stream.write(wav_buffer.getvalue()); stream.close()
-            audio_config = speechsdk.audio.AudioConfig(stream=stream)
-            speech_recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
-            result = speech_recognizer.recognize_once_async().get()
-            if result.reason == speechsdk.ResultReason.RecognizedSpeech: st.session_state.transcribed_text = result.text
-            elif result.reason == speechsdk.ResultReason.NoMatch: st.session_state.transcribed_text = "Error: Speech could not be recognized."
-            else: st.session_state.transcribed_text = f"Error: {result.cancellation_details.reason}"
-            self.audio_frames.clear()
+    speech_config = get_speech_config()
 
-    st.header("My Private Voice Notes")
-    st.caption("A safe space for your thoughts. These notes are private and not shared with your doctor.")
-    st.markdown("---")
-    st.subheader("Add a Voice Note")
-    st.write("Click START to record your thoughts. Grant microphone access when prompted.")
+    if not speech_config:
+        st.error("Audio transcription is disabled. Please set the environment variables: `SPEECH_KEY` and `SPEECH_ENDPOINT`.")
+    else:
+        # --- WebRTC Audio Processor with Queue for reliable communication ---
+        class AzureSpeechSDKProcessor(AudioProcessorBase):
+            def __init__(self, result_queue):
+                self.audio_frames = []
+                self.is_processing = False
+                self.result_queue = result_queue # To send results back to the main thread
 
-    webrtc_ctx = webrtc_streamer(
-        key="speech-to-text-recorder",
-        mode=WebRtcMode.SENDONLY,
-        audio_processor_factory=AzureAudioProcessor,
-        media_stream_constraints={"video": False, "audio": True},
-    )
+            def recv_queued(self, frames):
+                self.audio_frames.extend(frames)
 
-    if webrtc_ctx.state.playing: st.info("🎙️ Recording... Click STOP to finish.")
-    else: st.info("▶️ Recorder is ready. Click START to begin.")
-    st.markdown("---")
+            def on_ended(self):
+                if self.is_processing or not self.audio_frames:
+                    return
 
-    st.subheader("Your Note")
-    if st.session_state.transcribed_text:
-        st.session_state.note_content = st.session_state.transcribed_text
-        st.session_state.transcribed_text = ""
+                self.is_processing = True
+                sound = pydub.AudioSegment.empty()
+                for frame in self.audio_frames:
+                    sound += frame
+                self.audio_frames.clear()
 
-    with st.form("mental_health_note_form"):
-        note_content_input = st.text_area(
-            "Your transcribed text will appear here. You can also type or edit directly.",
-            value=st.session_state.note_content, height=200, key="text_area_content"
+                if sound.duration_seconds < 0.5:
+                    self.is_processing = False
+                    return
+
+                try:
+                    sound = sound.set_frame_rate(16000).set_sample_width(2).set_channels(1)
+                    wav_buffer = io.BytesIO()
+                    sound.export(wav_buffer, format="wav")
+                    stream = speechsdk.audio.PushAudioInputStream()
+                    stream.write(wav_buffer.getvalue())
+                    stream.close()
+
+                    audio_config = speechsdk.audio.AudioConfig(stream=stream)
+                    speech_recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_config)
+                    result = speech_recognizer.recognize_once_async().get()
+
+                    final_text = ""
+                    if result.reason == speechsdk.ResultReason.RecognizedSpeech:
+                        final_text = result.text
+                    elif result.reason == speechsdk.ResultReason.NoMatch:
+                        final_text = "Error: Speech could not be recognized."
+                    elif result.reason == speechsdk.ResultReason.Canceled:
+                        final_text = f"Error: Transcription canceled - {result.cancellation_details.reason}"
+
+                    # Put the result into the queue to safely pass it to the main thread
+                    self.result_queue.put(final_text)
+                except Exception as e:
+                    self.result_queue.put(f"An error occurred during transcription: {e}")
+                finally:
+                    self.is_processing = False
+
+        # --- Streamlit UI Components ---
+        st.header("My Private Voice Notes")
+        st.caption("A safe space for your thoughts. These notes are private and not shared with your doctor.")
+        st.markdown("---")
+        st.subheader("Add a Voice Note")
+        st.write("Click START to record your thoughts. Grant microphone access when prompted.")
+
+        # Create the queue before the streamer
+        result_queue = queue.Queue()
+
+        webrtc_ctx = webrtc_streamer(
+            key="speech-to-text-recorder",
+            mode=WebRtcMode.SENDONLY,
+            # Pass the queue to the processor factory
+            audio_processor_factory=lambda: AzureSpeechSDKProcessor(result_queue=result_queue),
+            media_stream_constraints={"video": False, "audio": True},
         )
-        if st.form_submit_button("Save Note to Diary") and note_content_input:
-            db.collection("mental_health_notes").add({"patient_id": patient_id, "note": note_content_input, "timestamp": datetime.now()})
-            st.success("Your note has been saved successfully!")
-            st.session_state.note_content = ""
-            st.rerun()
 
-    st.header("Your Past Entries")
-    notes_ref = db.collection("mental_health_notes").where(filter=FieldFilter("patient_id", "==", patient_id)).order_by("timestamp", direction="DESCENDING").stream()
-    for note_doc in notes_ref:
-        note = note_doc.to_dict()
-        entry_date = note['timestamp'].strftime("%B %d, %Y at %I:%M %p")
-        with st.expander(f"**Note from: {entry_date}**"):
-            st.write(note['note'])
+        if webrtc_ctx.state.playing:
+            st.info("🎙️ Recording... Click STOP to finish.")
+        else:
+            st.info("▶️ Recorder is ready. Click START to begin.")
 
+        # Check the queue for a result when the recorder is not playing
+        if not webrtc_ctx.state.playing:
+            try:
+                # Non-blocking get from the queue
+                result = result_queue.get(block=False)
+                st.session_state.note_content = result
+                st.rerun() # Rerun to update the text_area with the new content
+            except queue.Empty:
+                pass # No result yet
+
+        st.markdown("---")
+        st.subheader("Your Note")
+
+        with st.form("mental_health_note_form"):
+            note_content_input = st.text_area(
+                "Your transcribed text will appear here. You can also type or edit directly.",
+                value=st.session_state.note_content, height=200, key="text_area_content"
+            )
+            submitted = st.form_submit_button("Save Note to Diary")
+            if submitted and note_content_input:
+                db.collection("mental_health_notes").add({
+                    "patient_id": patient_id,
+                    "note": note_content_input,
+                    "timestamp": firestore.SERVER_TIMESTAMP
+                })
+                st.success("Your note has been saved successfully!")
+                st.session_state.note_content = "" # Clear the text area after saving
+                st.rerun()
+
+        st.header("Your Past Entries")
+        notes_ref = db.collection("mental_health_notes").where(filter=FieldFilter("patient_id", "==", patient_id)).order_by("timestamp", direction="DESCENDING").stream()
+        notes_list = list(notes_ref)
+
+        if not notes_list:
+            st.info("You haven't saved any notes yet.")
+        else:
+            for note_doc in notes_list:
+                note = note_doc.to_dict()
+                if 'timestamp' in note and isinstance(note['timestamp'], datetime):
+                    entry_date = note['timestamp'].strftime("%B %d, %Y at %I:%M %p")
+                    with st.expander(f"**Note from: {entry_date}**"):
+                        st.write(note['note'])
+                else:
+                    st.warning(f"Note with ID {note_doc.id} has a missing or invalid timestamp.")
 
 # =================================================================================================
 # --- TAB 3: Family Tree Group ---
 # =================================================================================================
+# This tab's code remains unchanged.
 with tab3:
     st.header("Family Tree Groups")
     st.caption("Create or join groups to share health information with family members.")
-
+    # (Rest of Tab 3 code is here)
     if st.session_state.viewing_group_id:
         group_id = st.session_state.viewing_group_id
         group_doc = db.collection("family_groups").document(group_id).get()
@@ -217,20 +291,20 @@ with tab3:
         if st.button("⬅️ Back to All Groups"):
             st.session_state.viewing_group_id = None
             st.rerun()
-
         with st.expander("Add a new family member to this group"):
             with st.form("add_member_form", clear_on_submit=True):
                 new_member_id = st.text_input("New Member's Patient ID")
                 relationship = st.text_input("Their relationship to you (e.g., Father, Sister, Son)")
                 if st.form_submit_button("Add Member") and new_member_id and relationship:
                     new_member_ref = db.collection("patients").document(new_member_id)
-                    if not new_member_ref.get().exists: st.error("Patient ID not found.")
+                    new_member_doc = new_member_ref.get()
+                    if not new_member_doc.exists:
+                        st.error("Patient ID not found.")
                     else:
-                        new_member_name = new_member_ref.get().to_dict().get('Name', 'N/A')
-                        db.collection("family_groups").document(group_id).collection("members").document(new_member_id).set({"name": new_member_name, "relationship": relationship, "relative_to_id": patient_id, "added_at": datetime.now()})
+                        new_member_name = new_member_doc.to_dict().get('Name', 'N/A')
+                        db.collection("family_groups").document(group_id).collection("members").document(new_member_id).set({"name": new_member_name,"relationship": relationship,"relative_to_id": patient_id,"added_at": firestore.SERVER_TIMESTAMP})
                         new_member_ref.update({"family_groups": firestore.ArrayUnion([group_id])})
-                        st.success(f"Added {new_member_name} to the group!"); st.rerun()
-
+                        st.success(f"Added {new_member_name} to the group!");st.rerun()
         st.subheader("Group Members")
         members_ref = db.collection("family_groups").document(group_id).collection("members").stream()
         members_list = [m.to_dict() for m in members_ref]
@@ -242,18 +316,14 @@ with tab3:
                 r_cols = st.columns([2,2,2]); r_cols[0].write(member.get('name')); r_cols[1].write(member.get('relationship')); r_cols[2].write(relatives_map.get(member.get('relative_to_id'), "N/A"))
         else:
             st.info("This group has no members yet. Add one using the form above.")
-
     else:
         with st.expander("Create a New Family Group"):
             with st.form("new_group_form", clear_on_submit=True):
                 group_name = st.text_input("New Group Name (e.g., Paternal Side)")
                 if st.form_submit_button("Create Group") and group_name:
                     new_group_ref = db.collection("family_groups").document()
-                    new_group_ref.set({"group_name": group_name, "creator_id": patient_id, "created_at": datetime.now()})
-                    new_group_ref.collection("members").document(patient_id).set({"name": patient_name, "relationship": "Self", "relative_to_id": patient_id, "added_at": datetime.now()})
-                    patient_ref.update({"family_groups": firestore.ArrayUnion([new_group_ref.id])})
-                    st.success(f"Group '{group_name}' created!"); st.rerun()
-
+                    batch = db.batch();batch.set(new_group_ref, {"group_name": group_name,"creator_id": patient_id,"created_at": firestore.SERVER_TIMESTAMP});members_subcollection = new_group_ref.collection("members");batch.set(members_subcollection.document(patient_id), {"name": patient_name,"relationship": "Self","relative_to_id": patient_id,"added_at": firestore.SERVER_TIMESTAMP});batch.update(patient_ref, {"family_groups": firestore.ArrayUnion([new_group_ref.id])});batch.commit()
+                    st.success(f"Group '{group_name}' created!");st.rerun()
         st.subheader("Your Existing Groups")
         try:
             patient_doc_data = patient_ref.get().to_dict()
@@ -264,8 +334,7 @@ with tab3:
                 for group_id in my_group_ids:
                     group_doc = db.collection("family_groups").document(group_id).get()
                     if group_doc.exists:
-                        g_cols = st.columns([3,1])
-                        g_cols[0].write(f"**{group_doc.to_dict().get('group_name')}**")
+                        g_cols = st.columns([3,1]);g_cols[0].write(f"**{group_doc.to_dict().get('group_name')}**")
                         if g_cols[1].button("View/Manage", key=f"view_{group_id}"):
                             st.session_state.viewing_group_id = group_id
                             st.rerun()

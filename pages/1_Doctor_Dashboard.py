@@ -60,7 +60,7 @@ with tab1:
 
     if search_submitted and search_patient_id:
         st.session_state.searched_patient_id = search_patient_id
-        st.session_state.access_granted = False # Reset access on new search
+        st.session_state.access_granted = False
 
     if 'searched_patient_id' in st.session_state:
         patient_id = st.session_state.searched_patient_id
@@ -73,29 +73,22 @@ with tab1:
             st.subheader(f"Records for Patient: {patient_data.get('Name', 'N/A')} (ID: {patient_id})")
 
             is_confidential = patient_data.get('confidential', False)
-            # First, handle overall access for confidential records
             if is_confidential and not st.session_state.get('access_granted', False):
                 st.warning("🔒 This patient's records are marked as confidential.")
                 if st.button("Request Access to Confidential Data"):
-                    with st.spinner("Requesting..."):
-                        time.sleep(1)
-                    st.success("✅ OTP sent to patient for verification.")
-                    time.sleep(1)
-                    st.session_state.access_granted = True
-                    st.rerun()
+                    with st.spinner("Requesting..."): time.sleep(1)
+                    st.success("✅ OTP sent to patient for verification."); time.sleep(1)
+                    st.session_state.access_granted = True; st.rerun()
             else:
-                # This block runs if records are not confidential OR access has been granted
-                if is_confidential:
-                    st.success("🔓 Access to confidential records granted.")
+                if is_confidential: st.success("🔓 Access to confidential records granted.")
 
-                view_red_data = st.toggle("🔴 Show Critical (Red) Records", help="Turn on to view records marked as critical by the patient.")
+                view_red_data = st.toggle("🔴 Show Critical (Red) Records", help="Turn on to view records marked as critical.")
 
-                # Fetch all data once
+                # --- Data Fetching and Filtering ---
                 all_prescriptions = [doc.to_dict() for doc in db.collection("prescriptions").where("patient_id", "==", patient_id).stream()]
                 all_allergies = [doc.to_dict() for doc in db.collection("allergies_and_conditions").where("patient_id", "==", patient_id).stream()]
                 all_scans = [doc.to_dict() for doc in db.collection("scans").where("patient_id", "==", patient_id).stream()]
 
-                # Filter data based on the toggle's state
                 if view_red_data:
                     prescriptions, allergies, scans = all_prescriptions, all_allergies, all_scans
                 else:
@@ -103,51 +96,71 @@ with tab1:
                     allergies = [a for a in all_allergies if a.get('category', 'Green') in ['Green', 'Yellow']]
                     scans = [s for s in all_scans if s.get('category', 'Green') in ['Green', 'Yellow']]
 
-                # --- Display Filtered Data ---
+                # --- Display Patient Data ---
                 st.write(f"**DOB:** {patient_data.get('DOB', 'N/A')} | **Blood Group:** {patient_data.get('BloodGroup', 'N/A')}")
                 col1, col2 = st.columns(2)
                 with col1:
-                    with st.expander("🤧 Allergies & Conditions", expanded=True):
+                    with st.expander("🤧 Health History", expanded=True):
                         if allergies:
                             for allergy in allergies: st.info(f"{get_dot(allergy.get('category'))} {allergy['description']}")
-                        else: st.write("No conditions to display in this view.")
+                        else: st.write("No conditions to display.")
                 with col2:
                     with st.expander("📷 Medical Scans", expanded=True):
                         if scans:
                             for scan in scans: st.markdown(f"{get_dot(scan.get('category'))} **{scan['body_part']}**: [View Scan]({scan['file_url']})")
-                        else: st.write("No scans to display in this view.")
-
+                        else: st.write("No scans to display.")
                 with st.expander("💊 Prescriptions", expanded=True):
                     if prescriptions:
                         df_data = [{"Category": get_dot(p.get('category')), "Medication": p['medication_name'], "Condition": p['condition'], "Duration": p['duration']} for p in prescriptions]
                         st.dataframe(pd.DataFrame(df_data), use_container_width=True)
-                    else: st.write("No prescriptions to display in this view.")
-
+                    else: st.write("No prescriptions to display.")
                 st.divider()
 
-                # --- NEW: AI Clinical Assistant Section ---
+                # --- AI Clinical Assistant Section ---
                 st.subheader("🤖 AI Clinical Assistant")
 
-                # Prepare data for the AI model (only Green and Yellow status)
+                # Fetch and process family data
+                with st.spinner("Analyzing family health history..."):
+                    my_group_ids = patient_data.get('family_groups', [])
+                    all_relatives_ids = set()
+                    if my_group_ids:
+                        for group_id in my_group_ids:
+                            members_ref = db.collection("family_groups").document(group_id).collection("members").stream()
+                            for member in members_ref:
+                                all_relatives_ids.add(member.id)
+                    all_relatives_ids.discard(patient_id) # Remove current patient
+
+                    family_conditions = []
+                    for rel_id in all_relatives_ids:
+                        conds = db.collection("allergies_and_conditions").where("patient_id", "==", rel_id).stream()
+                        for cond in conds:
+                            c_data = cond.to_dict()
+                            if c_data.get('category', 'Green') in ['Green', 'Yellow']:
+                                family_conditions.append(c_data['description'])
+                    
+                    # Consolidate and anonymize family history
+                    anon_family_history = {"conditions": list(set(family_conditions))}
+
+                # Prepare data for the AI model
                 gy_allergies = [a['description'] for a in all_allergies if a.get('category', 'Green') in ['Green', 'Yellow']]
                 gy_prescriptions = [p['medication_name'] for p in all_prescriptions if p.get('category', 'Green') in ['Green', 'Yellow']]
-
+                
                 patient_context_for_ai = {
-                    "allergies": gy_allergies,
-                    "current_medications": gy_prescriptions,
-                    "patient_details": { "name": patient_data.get('Name'), "dob": patient_data.get('DOB') }
+                    "patient_conditions": gy_allergies,
+                    "patient_medications": gy_prescriptions,
+                    "family_history": anon_family_history,
                 }
 
-                with st.expander("View Data to be Sent to AI"):
+                with st.expander("View Data Sent to AI"):
                     st.json(patient_context_for_ai)
 
-                procedure = st.text_input("Enter a medical procedure or context for analysis (e.g., 'Dental Extraction')", key="ai_procedure")
+                procedure = st.text_input("Enter a medical procedure or context for analysis", key="ai_procedure")
 
                 if st.button("Analyze with AI", key="ai_analyze_button"):
                     if not procedure:
                         st.warning("Please enter a procedure to analyze.")
                     else:
-                        api_url = "http://127.0.0.1:5000/api/medical/analyze"
+                        api_url = "http://127.0.0.1:5001/api/medical/analyze"
                         payload = {"patient_data": patient_context_for_ai, "procedure": procedure}
                         with st.spinner("AI is analyzing the data..."):
                             try:
@@ -164,13 +177,12 @@ with tab1:
                                 st.error(f"Could not connect to the AI analysis service. Is the backend running? Error: {e}")
                 
                 st.divider()
-
-                # --- Forms to add new data ---
+              
                 st.subheader("Add New Records")
                 form_col1, form_col2, form_col3 = st.columns(3)
                 with form_col1:
                     with st.form("add_allergy_form", clear_on_submit=True):
-                        new_allergy = st.text_input("Add Allergy/Condition")
+                        new_allergy = st.text_input("Add Health Condition")
                         if st.form_submit_button("Add"):
                             if new_allergy:
                                 db.collection("allergies_and_conditions").add({"patient_id": patient_id, "description": new_allergy, "category": "Green", "timestamp": datetime.now()})
