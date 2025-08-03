@@ -4,11 +4,17 @@ import pandas as pd
 import shap
 import numpy as np
 import traceback
+import os
 
-# Load model and preprocessing tools
-model = joblib.load("maternity_risk_model.pkl")
-scaler = joblib.load("scaler.pkl")
-label_encoders = joblib.load("label_encoders.pkl")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+model_path = os.path.join(BASE_DIR, "maternity_risk_model.pkl")
+label_encoders_path = os.path.join(BASE_DIR, "label_encoders.pkl")
+scaler_path = os.path.join(BASE_DIR, "scaler.pkl")
+
+model = joblib.load(model_path)
+label_encoders = joblib.load(label_encoders_path)
+scaler = joblib.load(scaler_path)
 
 risk_cols = ['risk_gdm', 'risk_preeclampsia', 'risk_anemia', 'risk_preterm_labor']
 explainers = [shap.Explainer(est) for est in model.estimators_]

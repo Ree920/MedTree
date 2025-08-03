@@ -24,6 +24,19 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+st.markdown("""
+<style>
+    .css-1d391kg {display: none}
+    .css-1rs6os {display: none}
+    .css-17eq0hr {display: none}
+    [data-testid="stSidebar"] {display: none}
+    [data-testid="collapsedControl"] {display: none}
+    .css-1lcbmhc {margin-left: 0rem}
+    .css-1outpf7 {margin-left: 0rem}
+    section[data-testid="stSidebar"] {display: none !important}
+</style>
+""", unsafe_allow_html=True)
+
 if not st.session_state.get('doctor_logged_in'):
     st.error("You must be logged in to view this page.")
     st.stop()
@@ -36,7 +49,7 @@ db = get_firestore_client()
 bucket = get_storage_bucket()
 
 # --- Main Page Layout ---
-tab1, tab2 = st.tabs(["View/Manage Patient", "Create New Patient"])
+tab1, tab2, tab3 = st.tabs(["View/Manage Patient", "Create New Patient", "Maternity Risk Assessment"])
 
 # --- TAB 1: View/Manage Patient ---
 with tab1:
@@ -212,3 +225,206 @@ with tab2:
                 st.code(f"Patient ID: {patient_id}\nPassword: {p_password}")
             else:
                 st.error("Please fill in all required details.")
+
+# --- TAB 3: Maternity Risk Assessment ---
+with tab3:
+    st.header("🤱 Maternity Risk Assessment")
+    st.write("Enter a patient ID to automatically assess pregnancy-related risks based on their stored medical data.")
+    
+    # Simple patient ID input form
+    with st.form("maternity_patient_search"):
+        risk_patient_id = st.text_input("Enter Patient ID for Risk Assessment", placeholder="PAT-12345678")
+        assess_risk = st.form_submit_button("🔍 Assess Maternity Risk", use_container_width=True)
+    
+    if assess_risk and risk_patient_id:
+        # Fetch patient data from Firebase
+        patient_doc = db.collection("patients").document(risk_patient_id).get()
+        
+        if not patient_doc.exists:
+            st.error(f"❌ No patient found with ID: {risk_patient_id}")
+        else:
+            patient_data = patient_doc.to_dict()
+            st.success(f"✅ Patient found: {patient_data.get('Name', 'N/A')}")
+            
+            # Display patient basic info
+            col_info1, col_info2 = st.columns(2)
+            with col_info1:
+                st.write(f"**Name:** {patient_data.get('Name', 'N/A')}")
+                st.write(f"**DOB:** {patient_data.get('DOB', 'N/A')}")
+            with col_info2:
+                st.write(f"**Gender:** {patient_data.get('Gender', 'N/A')}")
+                st.write(f"**Blood Group:** {patient_data.get('BloodGroup', 'N/A')}")
+            
+            # Calculate age from DOB
+            try:
+                dob = datetime.strptime(patient_data.get('DOB', '1990-01-01'), '%Y-%m-%d')
+                age = (datetime.now() - dob).days // 365
+            except:
+                age = 25  # default age
+            
+            # For this simplified version, we'll use default/estimated values
+            # In a real implementation, you'd have additional patient data stored
+            assessment_data = {
+                "age": age,
+                "bmi": 22.0,  # Default - would need to be stored in patient data
+                "blood_pressure": 120,  # Default - would come from recent vitals
+                "hemoglobin": 12.0,  # Default - would come from recent lab results
+                "glucose": 90,  # Default - would come from recent lab results
+                "parity": 0,  # Default - would be stored in patient obstetric history
+                "education": "Graduate",  # Default - could be stored in patient demographics
+                "smoking": "No",  # Default - would be stored in patient social history
+                "income": "Middle",  # Default - could be stored in patient demographics
+                "history_anemia": "No",  # Would check patient's allergy/condition records
+                "history_gdm": "No",  # Would check patient's medical history
+                "history_preeclampsia": "No",  # Would check patient's medical history
+                "history_preterm": "No"  # Would check patient's obstetric history
+            }
+            
+            st.info("ℹ️ Using default values for missing medical data. In production, this would pull from comprehensive patient records including vitals, lab results, and medical history.")
+            
+            # Make API call to maternity risk model
+            api_url = "http://127.0.0.1:5000/predict"
+            
+            with st.spinner("Analyzing maternity risks..."):
+                try:
+                    response = requests.post(api_url, json=assessment_data, timeout=30)
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        predictions = result.get("prediction", {})
+                        explanations = result.get("explanation_top_features", {})
+                        
+                        st.success("✅ Risk Assessment Complete!")
+                        
+                        # Display results in a structured format
+                        st.subheader("📊 Risk Assessment Results")
+                        
+                        # Create columns for different risk types
+                        risk_col1, risk_col2 = st.columns(2)
+                        
+                        with risk_col1:
+                            # Gestational Diabetes Risk
+                            gdm_risk = predictions.get("risk_gdm", 0)
+                            if gdm_risk == 1:
+                                st.error("🔴 **High Risk: Gestational Diabetes**")
+                            else:
+                                st.success("🟢 **Low Risk: Gestational Diabetes**")
+                            
+                            if "risk_gdm" in explanations:
+                                st.write(f"*{explanations['risk_gdm']}*")
+                            
+                            st.divider()
+                            
+                            # Anemia Risk
+                            anemia_risk = predictions.get("risk_anemia", 0)
+                            if anemia_risk == 1:
+                                st.error("🔴 **High Risk: Anemia**")
+                            else:
+                                st.success("🟢 **Low Risk: Anemia**")
+                            
+                            if "risk_anemia" in explanations:
+                                st.write(f"*{explanations['risk_anemia']}*")
+                        
+                        with risk_col2:
+                            # Preeclampsia Risk
+                            preeclampsia_risk = predictions.get("risk_preeclampsia", 0)
+                            if preeclampsia_risk == 1:
+                                st.error("🔴 **High Risk: Preeclampsia**")
+                            else:
+                                st.success("🟢 **Low Risk: Preeclampsia**")
+                            
+                            if "risk_preeclampsia" in explanations:
+                                st.write(f"*{explanations['risk_preeclampsia']}*")
+                            
+                            st.divider()
+                            
+                            # Preterm Labor Risk
+                            preterm_risk = predictions.get("risk_preterm_labor", 0)
+                            if preterm_risk == 1:
+                                st.error("🔴 **High Risk: Preterm Labor**")
+                            else:
+                                st.success("🟢 **Low Risk: Preterm Labor**")
+                            
+                            if "risk_preterm_labor" in explanations:
+                                st.write(f"*{explanations['risk_preterm_labor']}*")
+                        
+                        st.divider()
+                        
+                        # Summary and Recommendations
+                        st.subheader("📝 Clinical Summary & Recommendations")
+                        
+                        high_risks = [risk.replace("risk_", "").replace("_", " ").title() 
+                                    for risk, value in predictions.items() if value == 1]
+                        
+                        if high_risks:
+                            st.warning(f"**High-risk conditions identified:** {', '.join(high_risks)}")
+                            st.write("**Recommended Actions:**")
+                            
+                            recommendations = []
+                            if gdm_risk == 1:
+                                recommendations.append("• Monitor glucose levels regularly")
+                                recommendations.append("• Consider dietary counseling")
+                                recommendations.append("• Schedule more frequent prenatal visits")
+                            
+                            if preeclampsia_risk == 1:
+                                recommendations.append("• Monitor blood pressure closely")
+                                recommendations.append("• Watch for signs of preeclampsia (headaches, vision changes)")
+                                recommendations.append("• Consider low-dose aspirin prophylaxis")
+                            
+                            if anemia_risk == 1:
+                                recommendations.append("• Iron supplementation")
+                                recommendations.append("• Dietary modifications to include iron-rich foods")
+                                recommendations.append("• Monitor hemoglobin levels")
+                            
+                            if preterm_risk == 1:
+                                recommendations.append("• Monitor for signs of preterm labor")
+                                recommendations.append("• Consider cervical length monitoring")
+                                recommendations.append("• Educate patient on warning signs")
+                            
+                            for rec in recommendations:
+                                st.write(rec)
+                        else:
+                            st.success("**Low risk for all assessed conditions.** Continue with routine prenatal care.")
+                        
+                        # Option to save assessment
+                        if st.button("💾 Save Assessment to Patient Record"):
+                            # Save assessment results to Firebase
+                            assessment_record = {
+                                "patient_id": risk_patient_id,
+                                "assessment_date": datetime.now(),
+                                "predictions": predictions,
+                                "explanations": explanations,
+                                "assessed_by": st.session_state.get('doctor_name', 'Unknown Doctor'),
+                                "assessment_data": assessment_data
+                            }
+                            db.collection("maternity_assessments").add(assessment_record)
+                            st.success("Assessment saved to patient record!")
+                    
+                    else:
+                        st.error(f"❌ Error from risk assessment service: {response.status_code}")
+                        if response.text:
+                            st.code(response.text)
+                            
+                except requests.exceptions.ConnectionError:
+                    st.error("❌ Could not connect to the maternity risk assessment service. Please ensure the Flask backend is running on http://127.0.0.1:5000")
+                except requests.exceptions.Timeout:
+                    st.error("❌ Request timed out. The assessment service may be overloaded.")
+                except Exception as e:
+                    st.error(f"❌ An unexpected error occurred: {str(e)}")
+    
+    # Additional information section
+    with st.expander("ℹ️ About Maternity Risk Assessment"):
+        st.write("""
+        This AI-powered tool automatically assesses pregnancy-related risks using patient data from their medical records.
+        Simply enter a patient ID to get an instant risk assessment covering:
+        
+        - **Gestational Diabetes Mellitus (GDM)**: High blood sugar during pregnancy
+        - **Preeclampsia**: High blood pressure and organ damage during pregnancy  
+        - **Anemia**: Low red blood cell count or hemoglobin levels
+        - **Preterm Labor**: Labor that begins before 37 weeks of pregnancy
+        
+        **Note:** Currently uses default values for missing medical data. In a full implementation, 
+        this would pull comprehensive data including recent vitals, lab results, and complete medical history.
+        
+        **Important:** This tool assists clinical decision-making and should not replace professional medical judgment.
+        """)

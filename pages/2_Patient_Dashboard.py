@@ -35,6 +35,20 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Hide the sidebar completely
+st.markdown("""
+<style>
+    .css-1d391kg {display: none}
+    .css-1rs6os {display: none}
+    .css-17eq0hr {display: none}
+    [data-testid="stSidebar"] {display: none}
+    [data-testid="collapsedControl"] {display: none}
+    .css-1lcbmhc {margin-left: 0rem}
+    .css-1outpf7 {margin-left: 0rem}
+    section[data-testid="stSidebar"] {display: none !important}
+</style>
+""", unsafe_allow_html=True)
+
 if not st.session_state.get('patient_logged_in'):
     st.error("You must be logged in to view this page.")
     st.stop()
